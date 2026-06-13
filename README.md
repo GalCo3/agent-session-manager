@@ -19,12 +19,12 @@ terminal for each session — from your phone or any browser. Runs **natively**
 </p>
 
 > [!WARNING]
-> **This grants shell access to anyone who can reach the port — read [Security](#security) before exposing it.**
-> The in-browser terminal attaches to `claude` running on the host with **no
-> authentication**, and the server binds all interfaces (`0.0.0.0`) by default.
-> On a trusted LAN that's convenient; on an open network it's remote code
-> execution. Bind to localhost and tunnel, or put it behind a VPN/reverse proxy
-> with auth.
+> **The in-browser terminal is an unauthenticated shell into the host — read [Security](#security) before changing the bind address.**
+> By default the server and ttyd bind **loopback only** (`127.0.0.1`), and remote
+> access is meant to go over **Tailscale** (set up automatically by the
+> installer) or an SSH tunnel — never raw on the LAN. Setting `BIND_ADDR=0.0.0.0`
+> re-exposes every interface with no auth; only do that behind a VPN or a
+> reverse proxy that adds authentication.
 
 ## Features
 - **List sessions** — name, working folder, age, running/idle, attached
@@ -76,41 +76,71 @@ Auto-detects macOS (launchd) or Linux (systemd):
 
 - macOS → per-user LaunchAgent `com.claude.sessions`, logs in `./logs/`
 - Linux → system service `claude-sessions`, logs via `journalctl -u claude-sessions -f`
+- Binds **loopback** (`127.0.0.1`) and, if Tailscale is installed and logged in,
+  runs `tailscale serve` so you can reach the UI from your tailnet devices at
+  `http://<your-tailnet-host>:3000`. No Tailscale? It stays localhost-only and
+  prints how to add it.
 
-Uninstall: `./install-service.sh uninstall`
+Hardening flags (see [Security](#security)):
+
+```bash
+LIMITED_USER=1 ./install-service.sh   # Linux: run the service as a keyless claude-web user
+TAILSCALE=0    ./install-service.sh   # skip tailnet setup (localhost / SSH-tunnel only)
+BIND_ADDR=0.0.0.0 ./install-service.sh # ⚠ re-expose on the LAN — only behind a VPN/auth proxy
+```
+
+Uninstall: `./install-service.sh uninstall` (also removes the tailscale serve forwards).
 
 ### Manually (foreground, for dev)
 ```bash
 ./run.sh
 ```
-Starts ttyd + the Node server; Ctrl-C tears both down.
+Starts ttyd + the Node server on `127.0.0.1`; Ctrl-C tears both down.
 
-Open **http://localhost:3000** (or `http://<host-ip>:3000` from your phone — but
-see [Security](#security) first). On first run the parent-folders list is
-**empty**: open settings (gear icon) and add a parent directory to start
-creating sessions.
+Open **http://localhost:3000** on the host. To reach it from your phone, use
+Tailscale or an SSH tunnel — see [Security](#security); it is **not** on the LAN
+by default. On first run the parent-folders list is **empty**: open settings
+(gear icon) and add a parent directory to start creating sessions.
 
 ## Security
-This app is a remote terminal into your host. Treat it accordingly.
+This app is a remote terminal into your host. The terminal has **no built-in
+auth** — anyone who can reach it can type into a live `claude` and, by exiting
+it, get a shell. Defense is layered so no single slip is fatal:
 
-- **No built-in auth.** Any client that can reach the web port (`3000`) or the
-  ttyd port (`7681`) can create/kill sessions and type into a live `claude`
-  shell on your machine. ttyd runs `--writable` on `--interface 0.0.0.0`, and
-  the API server binds `0.0.0.0` too.
+**Layer A — loopback bind + Tailscale (network).** The API (`3000`) and ttyd
+(`7681`) bind `127.0.0.1` only (`BIND_ADDR`), so the LAN/internet can't reach
+them. The installer runs `tailscale serve` to forward both ports over your
+tailnet (WireGuard-encrypted, your devices only) — reach the UI at
+`http://<your-tailnet-host>:3000`. This is what closes the "anyone on the same
+Wi-Fi gets a shell" hole. Alternatives: an SSH tunnel
+(`ssh -L 3000:localhost:3000 -L 7681:localhost:7681 host`) or a reverse proxy
+that adds auth. `BIND_ADDR=0.0.0.0` defeats this layer — don't, unless something
+else is gating access.
+
+**Layer C — no shell behind claude (escape).** Sessions launch `claude` as the
+tmux window's command, not typed into a login shell. Exiting claude
+(Ctrl-C / Ctrl-D) kills the pane and destroys the session instead of dropping
+the attached terminal to a host shell with your ssh keys and sudo. Always on.
+
+**Layer B — keyless service user (privilege, opt-in).** `LIMITED_USER=1` runs
+the Linux service as a dedicated `claude-web` user with no ssh keys and no
+sudo, so even a future escape lands as a powerless user — not as you. The
+installer creates the user and prints the one-time follow-ups (log claude in as
+that user, grant it access to your working-folder parents). It starts with its
+own home/config, so re-add your parent folders in the UI. Linux/systemd only.
+
+**Other notes.**
 - **The directory browser roams the whole host filesystem** by design, so the
   UI can pick parent folders. Session/folder *names* are sanitized to
   `[A-Za-z0-9_-]` before being interpolated into tmux/shell commands, but the
-  browse endpoint enumerates arbitrary directory names to whoever is connected.
-- **Recommended deployments:**
-  - **Localhost only + SSH tunnel** — access via
-    `ssh -L 3000:localhost:3000 -L 7681:localhost:7681 host`. Safest.
-  - **VPN** (Tailscale/WireGuard) — reach it only from your own devices.
-  - **Reverse proxy with auth** (nginx/Caddy basic-auth or an SSO proxy) in
-    front of both ports.
-- **Do not expose ports 3000/7681 to the public internet.** There is no
-  rate-limiting, CSRF protection, or login.
+  browse endpoint enumerates arbitrary directory names to whoever is connected
+  — another reason to keep access to your own devices.
+- **No rate-limiting, CSRF protection, or login.** Do not expose `3000`/`7681`
+  to the public internet. `tailscale funnel` (public) is explicitly *not* used.
 
-If you harden the bind address or add auth, PRs welcome.
+Recommended baseline: defaults (loopback + Tailscale) for the network, plus
+`LIMITED_USER=1` if the host holds credentials you care about. PRs that add auth
+welcome.
 
 ## Configuration
 Environment variables (defaults shown):
@@ -119,6 +149,10 @@ Environment variables (defaults shown):
 |-----|---------|---------|
 | `PORT` | `3000` | web UI + API port |
 | `TTYD_PORT` | `7681` | ttyd terminal port |
+| `BIND_ADDR` | `127.0.0.1` | address the API + ttyd listen on. Loopback by default; `0.0.0.0` re-exposes the LAN (see [Security](#security)) |
+| `TAILSCALE` | `auto` | installer only: `auto`/`1` set up `tailscale serve` for both ports; `0` skips it |
+| `LIMITED_USER` | `0` | installer only (Linux): `1` runs the service as a keyless `claude-web` user |
+| `SERVICE_USER_NAME` | `claude-web` | installer only: name of the `LIMITED_USER` account |
 | `DEV_ROOT` | `$HOME/StudioProjects` | only seeds the directory browser's default start dir (not the folder root) |
 | `CONTEXT_LIMIT` | `200000` | model context window in tokens, for the per-session meter (set `1000000` for 1M-context) |
 | `TMUX_SOCKET` | `/tmp/tmux-0` | shared tmux socket (`run.sh` only) |

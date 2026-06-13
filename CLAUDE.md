@@ -94,6 +94,16 @@ browser ──HTTP──> Express (backend/server.js, :3000)
   `POST /api/sessions/:name/wake` recreates the tmux session + `claude --continue`
   (resumes the latest conversation). Don't add a state file for this — the
   history already survives restarts.
+- **Security is layered — don't regress any layer.** The terminal is an
+  unauthenticated shell into the host. (A) Node + ttyd bind `BIND_ADDR`
+  (default `127.0.0.1`, loopback); remote access goes over `tailscale serve`
+  (installer) or an SSH tunnel — never default the bind to `0.0.0.0`. (B)
+  `LIMITED_USER=1` runs the Linux service as keyless `claude-web`. (C)
+  `launchSession` runs `claude` as the tmux **window command**, not via
+  `send-keys` into a login shell — so exiting claude destroys the session
+  instead of dropping the attached browser to a host shell with ssh keys. Don't
+  revert to send-keys, and don't add a `remain-on-exit on` that would leave a
+  dead-but-attachable pane.
 - **Docker is intentionally gone.** On macOS a container can't share the host
   tmux socket (Linux VM) or read host auth (Keychain). Don't reintroduce it
   without solving host-session sharing.

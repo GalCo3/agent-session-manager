@@ -7,6 +7,12 @@ const fs = require('fs/promises');
 const { execFile } = require('child_process');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
+// SECURITY: bind loopback by default. The terminal is an unauthenticated shell
+// into the host, so it must not listen on the LAN. Reach it from other devices
+// via `tailscale serve` (see install-service.sh) or an SSH tunnel. Setting
+// BIND_ADDR=0.0.0.0 re-opens it to every host on the network — don't, unless
+// something else (VPN/reverse-proxy auth) is gating access.
+const BIND_ADDR = process.env.BIND_ADDR || '127.0.0.1';
 // DEV_ROOT is no longer the folder root (see config below) — it's only the
 // directory browser's default start dir when it's a real directory; otherwise
 // browseDefault() falls back to the home dir.
@@ -272,8 +278,20 @@ app.get('/api/sessions', async (req, res) => {
 // session a host/service restart wiped. `name` is sanitized to [A-Za-z0-9_-],
 // so it's safe to interpolate. Returns { ok: true } or { error }.
 async function launchSession(name, dir, resume) {
-  const create = await tmux(['new-session', '-d', '-s', name, '-c', dir]);
-  if (create.code !== 0) return { error: create.stderr.trim() || 'Failed to create session' };
+  // Remote Control named after the session => controllable from the Claude
+  // mobile/web app. --continue resumes the latest conversation in `dir`.
+  const cmd = `claude ${resume ? '--continue ' : ''}--permission-mode auto --remote-control ${name}`;
+
+  // SECURITY: run claude AS the tmux window's command, not typed into a login
+  // shell via send-keys. With the old send-keys approach, exiting claude
+  // (Ctrl-C / Ctrl-D) dropped the attached browser terminal back to a host
+  // shell with the service user's full privileges (ssh keys, sudo) — anyone who
+  // could reach the unauthenticated terminal got a shell. As the window
+  // command, claude exiting kills the pane; remain-on-exit is off by default, so
+  // the session is destroyed instead of leaving a shell to land in. `name` and
+  // `cmd` are built from the sanitized [A-Za-z0-9_-] name, safe to interpolate.
+  const create = await tmux(['new-session', '-d', '-s', name, '-c', dir, cmd]);
+  if (create.code !== 0) return { error: create.stderr.trim() || 'Failed to start claude' };
 
   // Mouse on => tmux reports the wheel to the browser terminal, so a one-finger
   // touch-drag (turned into wheel events by ttyd/shim.html) scrolls the pane's
@@ -281,12 +299,6 @@ async function launchSession(name, dir, resume) {
   // (tmux is a full-screen app, so the browser sees an alternate screen). Global
   // option on the shared server — set on every launch so it survives a restart.
   await tmux(['set', '-g', 'mouse', 'on']);
-
-  // Remote Control named after the session => controllable from the Claude
-  // mobile/web app. --continue resumes the latest conversation in `dir`.
-  const cmd = `claude ${resume ? '--continue ' : ''}--permission-mode auto --remote-control ${name}`;
-  const send = await tmux(['send-keys', '-t', name, cmd, 'Enter']);
-  if (send.code !== 0) return { error: send.stderr.trim() || 'Failed to start claude' };
 
   return { ok: true };
 }
@@ -668,7 +680,7 @@ app.get('/api/usage', async (req, res) => {
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
 loadConfig().then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Claude Session Manager on :${PORT}  parents=${getParents().length}`);
+  app.listen(PORT, BIND_ADDR, () => {
+    console.log(`Claude Session Manager on ${BIND_ADDR}:${PORT}  parents=${getParents().length}`);
   });
 });

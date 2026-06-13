@@ -11,6 +11,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DEV_ROOT="${DEV_ROOT:-$HOME/StudioProjects}"
 export PORT="${PORT:-3000}"
 export TTYD_PORT="${TTYD_PORT:-7681}"
+# SECURITY: bind loopback by default — the terminal is an unauthenticated shell
+# into the host. Reach it from other devices via `tailscale serve` (set up by
+# install-service.sh) or an SSH tunnel. BIND_ADDR=0.0.0.0 re-opens it to the
+# whole LAN; only do that behind a VPN/reverse-proxy that adds auth.
+export BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
 # tmux socket used by the API and by ttyd's attach command. Native = host tmux.
 TMUX_SOCKET="${TMUX_SOCKET:-/tmp/tmux-0}"
 
@@ -31,7 +36,7 @@ echo "[run] DEV_ROOT=$DEV_ROOT PORT=$PORT TTYD_PORT=$TTYD_PORT socket=$TMUX_SOCK
 # sh -c 'exec $1' word-splits the single arg back into argv and execs tmux.
 ttyd \
   --port "$TTYD_PORT" \
-  --interface 0.0.0.0 \
+  --interface "$BIND_ADDR" \
   --writable \
   --url-arg \
   --max-clients 0 \
