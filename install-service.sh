@@ -13,6 +13,9 @@
 #   LIMITED_USER 1 = run the Linux service as a        (default: 0)
 #                dedicated keyless user (Layer B)
 #   SERVICE_USER_NAME  name of that user               (default: claude-web)
+#   PURGE_CONFIG 1 = on uninstall, also delete the      (default: 0)
+#                parent-folders config (~/.config/claude-sessions);
+#                working folders are never touched
 #
 # SECURITY: services bind loopback (BIND_ADDR=127.0.0.1) so the unauthenticated
 # terminal is NOT exposed to the LAN. Remote access is meant to go over Tailscale
@@ -23,7 +26,8 @@
 #   ./install-service.sh                       install + start (loopback + tailscale)
 #   LIMITED_USER=1 ./install-service.sh        also run service as keyless claude-web user
 #   TAILSCALE=0 ./install-service.sh           skip tailnet setup (localhost/SSH-tunnel only)
-#   ./install-service.sh uninstall             stop + remove
+#   ./install-service.sh uninstall             stop + remove (keeps config)
+#   PURGE_CONFIG=1 ./install-service.sh uninstall   also wipe parent-folders config
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,6 +41,7 @@ BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
 TAILSCALE="${TAILSCALE:-auto}"
 LIMITED_USER="${LIMITED_USER:-0}"
 SERVICE_USER_NAME="${SERVICE_USER_NAME:-claude-web}"
+PURGE_CONFIG="${PURGE_CONFIG:-0}"
 
 LABEL="com.claude.sessions"
 ACTION="${1:-install}"
@@ -51,6 +56,13 @@ install_macos() {
     launchctl unload "$plist" 2>/dev/null || true
     rm -f "$plist"
     echo "Removed launchd service: $LABEL"
+    local CFG="$HOME/.config/claude-sessions"
+    if [ "$PURGE_CONFIG" = "1" ]; then
+      rm -rf "$CFG"
+      echo "Removed parent-folders config: $CFG"
+    elif [ -e "$CFG" ]; then
+      echo "  (parent-folders config kept at $CFG — wipe with PURGE_CONFIG=1 ./install-service.sh uninstall)"
+    fi
     return
   fi
 
@@ -98,6 +110,18 @@ install_linux() {
     $SUDO rm -f "$unit"
     $SUDO systemctl daemon-reload
     echo "Removed systemd service: claude-sessions"
+    # config lives in the run-as user's home; resolve it the same way install does
+    local RUN_AS="${SUDO_USER:-$USER}"
+    [ "$LIMITED_USER" = "1" ] && RUN_AS="$SERVICE_USER_NAME"
+    local RUN_HOME; RUN_HOME="$(getent passwd "$RUN_AS" 2>/dev/null | cut -d: -f6)"
+    RUN_HOME="${RUN_HOME:-$HOME}"
+    local CFG="$RUN_HOME/.config/claude-sessions"
+    if [ "$PURGE_CONFIG" = "1" ]; then
+      $SUDO rm -rf "$CFG"
+      echo "Removed parent-folders config: $CFG"
+    elif $SUDO test -e "$CFG"; then
+      echo "  (parent-folders config kept at $CFG — wipe with PURGE_CONFIG=1 $SUDO ./install-service.sh uninstall)"
+    fi
     echo "  (the '${SERVICE_USER_NAME}' user, if created, is left in place — remove with: $SUDO userdel -r ${SERVICE_USER_NAME})"
     return
   fi
