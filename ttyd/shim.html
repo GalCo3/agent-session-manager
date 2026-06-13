@@ -1,0 +1,61 @@
+<!-- ccm-touch-scroll: injected by ClaudeCodeManager (see ttyd/build-index.sh).
+     Enables one-finger drag-to-scroll over the xterm viewport on touch
+     devices. ttyd's bundled xterm.js has no touch scrolling, and full-screen
+     TUIs like Claude Code run in the alternate-screen buffer (which has no
+     viewport scrollback), so setting scrollTop does nothing. Instead we
+     translate the drag into synthetic wheel events and let xterm forward them:
+     as scrollback in the normal buffer, or as the app's own mouse-wheel/arrow
+     scroll in the alternate buffer. -->
+<style>
+  .xterm .xterm-viewport { -webkit-overflow-scrolling: touch !important; }
+  .xterm .xterm-viewport, .xterm .xterm-screen { touch-action: none !important; }
+</style>
+<script>
+(function () {
+  function bind(term) {
+    if (term.__ccmTouchScroll) return;
+    term.__ccmTouchScroll = true;
+    var lastY = 0, acc = 0, dragging = false, target = term;
+
+    // One drag-line == one wheel notch. Use the real row height when we can.
+    function rowHeight() {
+      var rows = term.querySelector('.xterm-rows');
+      var h = rows && rows.firstElementChild ? rows.firstElementChild.offsetHeight : 0;
+      return h > 4 ? h : 18;
+    }
+
+    term.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) { dragging = false; return; }
+      dragging = true; acc = 0;
+      lastY = e.touches[0].clientY;
+      target = e.target || term;
+    }, { passive: true });
+
+    term.addEventListener('touchmove', function (e) {
+      if (!dragging || e.touches.length !== 1) return;
+      var y = e.touches[0].clientY;
+      acc += lastY - y;            // finger up => scroll toward newer output
+      lastY = y;
+      var rh = rowHeight(), fired = 0;
+      while (Math.abs(acc) >= rh && fired < 40) {
+        var dir = acc > 0 ? 1 : -1;
+        acc -= dir * rh; fired++;
+        target.dispatchEvent(new WheelEvent('wheel', {
+          deltaY: dir * rh, deltaMode: 0, bubbles: true, cancelable: true
+        }));
+      }
+    }, { passive: true });
+
+    function stop() { dragging = false; acc = 0; }
+    term.addEventListener('touchend', stop, { passive: true });
+    term.addEventListener('touchcancel', stop, { passive: true });
+  }
+  function scan() {
+    var list = document.querySelectorAll('.xterm');
+    for (var i = 0; i < list.length; i++) bind(list[i]);
+  }
+  if (document.readyState !== 'loading') scan();
+  document.addEventListener('DOMContentLoaded', scan);
+  new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
+})();
+</script>

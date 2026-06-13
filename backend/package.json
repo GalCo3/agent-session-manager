@@ -1,0 +1,30 @@
+{
+  "name": "claude-session-manager",
+  "version": "1.0.0",
+  "description": "Web UI to manage tmux sessions running Claude Code",
+  "main": "server.js",
+  "type": "commonjs",
+  "license": "MIT",
+  "author": "GalCo3",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "tmux",
+    "ttyd",
+    "terminal",
+    "session-manager"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GalCo3/ClaudeCodeManager.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
