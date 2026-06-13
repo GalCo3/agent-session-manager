@@ -1,4 +1,8 @@
-# Claude Code Session Manager
+# Agent Session Manager
+
+> Unofficial, community project — not affiliated with, endorsed by, or sponsored
+> by Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic, used
+> here only to describe compatibility.
 
 Mobile-friendly web UI to manage [Claude Code](https://claude.com/claude-code)
 sessions running inside `tmux`. List, create, kill, and open an in-browser
@@ -59,8 +63,8 @@ Claude must be authenticated on the host: run `claude` once and log in.
 ## Install & run
 
 ```bash
-git clone https://github.com/GalCo3/ClaudeCodeManager.git
-cd ClaudeCodeManager/backend && npm install && cd ..
+git clone https://github.com/GalCo3/agent-session-manager.git
+cd agent-session-manager/backend && npm install && cd ..
 ```
 
 ### As a service (recommended)
@@ -182,6 +186,13 @@ Express serves `frontend/` statically. Edit a file, reload the browser. See
   tabs in `-F` output; the server uses `|` as the field separator.
 - **Parent-folders list empty / can't create sessions** — add a parent dir in
   the settings sheet first; the list starts empty.
+
+## Disclaimer
+This is an independent, unofficial tool. It is not affiliated with, endorsed by,
+or sponsored by Anthropic. "Claude" and "Claude Code" are trademarks of
+Anthropic, PBC — referenced here solely to describe what this software works
+with (nominative use). You are responsible for complying with Anthropic's terms
+when using Claude Code through this tool.
 
 ## License
 [MIT](LICENSE) © GalCo3
