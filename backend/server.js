@@ -502,10 +502,28 @@ app.post('/api/parents', async (req, res) => {
   const st = await fs.stat(p).catch(() => null);
   if (!st || !st.isDirectory()) return res.status(400).json({ error: 'Not a directory' });
   if (!getParents().includes(p)) {
-    config.parents = [...getParents(), p].sort();
+    config.parents = [...getParents(), p]; // append; order is user-managed, not sorted
     await saveConfig();
   }
   res.status(201).json(getParents());
+});
+
+// Reorder the parents list. Body `{ order: [...] }` must be a permutation of the
+// current parents (same set, no adds/removes) — UI-driven move up/down.
+app.put('/api/parents/order', async (req, res) => {
+  const order = req.body && req.body.order;
+  if (!Array.isArray(order) || order.some((x) => typeof x !== 'string')) {
+    return res.status(400).json({ error: 'order must be a string array' });
+  }
+  const cur = getParents();
+  const next = order.map((x) => path.resolve(x.trim()));
+  const same = next.length === cur.length
+    && new Set(next).size === next.length
+    && next.every((x) => cur.includes(x));
+  if (!same) return res.status(400).json({ error: 'order must be a permutation of current parents' });
+  config.parents = next;
+  await saveConfig();
+  res.json(getParents());
 });
 
 app.delete('/api/parents', async (req, res) => {

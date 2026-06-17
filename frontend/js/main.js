@@ -9,19 +9,24 @@ import { initTerminal, closeTerminal } from "./terminal.js";
 import { loadUsage, tickUsage } from "./usage.js";
 import { closeWake } from "./offline.js";
 import { initSettings, closeSettings } from "./settings.js";
+import { initGrid, closeGrid, closePicker, isPickerOpen, isGridOpen } from "./grid.js";
 
 initSelection();
 initCreate();
 initDialog();
 initTerminal();
 initSettings();
+initGrid();
 
 // scrim (backdrop) tap closes any open overlay
-$("scrim").addEventListener("click", () => { closeSheet(); closeDialog(); closeWake(); closeSettings(); });
+$("scrim").addEventListener("click", () => { closeSheet(); closeDialog(); closeWake(); closeSettings(); closePicker(); });
 
 // Esc closes overlays and leaves select mode
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    // When the grid view is open, Esc walks back one layer: picker, then view.
+    if (isPickerOpen()) { closePicker(); return; }
+    if (isGridOpen()) { closeGrid(); return; }
     closeSheet();
     closeDialog();
     closeTerminal();
