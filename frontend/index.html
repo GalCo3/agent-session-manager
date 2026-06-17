@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="css/styles.css" />
+<link rel="stylesheet" href="css/styles.css?v=4" />
 </head>
 <body>
 
@@ -34,6 +34,9 @@
       </div>
       <div class="head-actions">
         <span id="status" class="status" title="connection"><span id="dot" class="dot live"></span></span>
+        <button id="gridBtn" class="iconbtn" type="button" aria-label="Multi-terminal view" title="Multi-terminal view">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        </button>
         <button id="settingsBtn" class="iconbtn" type="button" aria-label="Settings" title="Settings">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
@@ -223,6 +226,36 @@
     <iframe id="termFrame" title="Terminal" allow="clipboard-read; clipboard-write"></iframe>
   </div>
 </div>
+
+<!-- multi-terminal grid view (full-screen, in-page) -->
+<div id="gridModal" class="grid-modal" role="dialog" aria-modal="true" aria-labelledby="gridTitle">
+  <div class="grid-head">
+    <button id="gridClose" class="iconbtn" type="button" aria-label="Back" title="Back">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+    </button>
+    <span class="grid-title" id="gridTitle">Multi-Terminal</span>
+    <span class="spacer"></span>
+    <div class="seg" role="group" aria-label="Tile layout">
+      <button class="seg-btn" data-layout="1" type="button" aria-label="Single tile" title="1 terminal"></button>
+      <button class="seg-btn" data-layout="2" type="button" aria-label="Two tiles" title="2 terminals"></button>
+      <button class="seg-btn" data-layout="3" type="button" aria-label="Three tiles" title="3 terminals"></button>
+      <button class="seg-btn" data-layout="4" type="button" aria-label="Four tiles" title="4 terminals"></button>
+    </div>
+    <button id="gridAdd" class="iconbtn" type="button" aria-label="Attach a session" title="Attach a session">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+  <div id="gridTiles" class="grid-tiles" data-layout="1"></div>
+</div>
+
+<!-- session picker for grid tiles -->
+<section id="gridPicker" class="sheet" role="dialog" aria-modal="true" aria-labelledby="pickTitle">
+  <div class="grab" aria-hidden="true"></div>
+  <h2 id="pickTitle">Attach a session</h2>
+  <p class="sheet-sub">Pick a running session to show in this tile.</p>
+  <div id="pickList" class="wake-list"></div>
+  <div id="pickMsg" class="msg" role="status" aria-live="polite"></div>
+</section>
 
 <script type="module" src="js/main.js"></script>
 </body>

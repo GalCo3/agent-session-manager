@@ -40,13 +40,28 @@ function bindViewport(on) {
   }
 }
 
+// Build a fresh iframe inside .term-body. We never reuse the iframe across
+// opens: ttyd registers a `beforeunload` handler ("leave site?" confirm), so
+// navigating it (e.g. src="about:blank") on close pops that dialog. Removing
+// the element tears ttyd down silently — no prompt.
+function makeFrame(url) {
+  const body = document.querySelector("#termModal .term-body");
+  body.replaceChildren();
+  const f = document.createElement("iframe");
+  f.id = "termFrame";
+  f.title = "Terminal";
+  f.setAttribute("allow", "clipboard-read; clipboard-write");
+  f.src = url;
+  body.appendChild(f);
+}
+
 /** Open the terminal modal for a session, loading its ttyd URL in the iframe. */
 export async function openTerminal(name) {
   const { url } = await getTerminal(name);
   openName = name;
   $("termTitle").textContent = name;
   $("termPop").href = url;          // pop-out fallback opens the same URL
-  $("termFrame").src = url;
+  makeFrame(url);
   $("termModal").classList.add("open");
   document.body.classList.add("term-open");
   bindViewport(true);
@@ -56,7 +71,9 @@ export function closeTerminal() {
   if (!openName) return;
   $("termModal").classList.remove("open");
   document.body.classList.remove("term-open");
-  $("termFrame").src = "about:blank"; // drop the ttyd connection
+  // Remove the iframe element (not navigate it) so ttyd's beforeunload
+  // handler can't pop a "leave site?" confirm. Next open builds a fresh one.
+  document.querySelector("#termModal .term-body").replaceChildren();
   bindViewport(false);
   openName = null;
 }

@@ -32,4 +32,5 @@ export const getSuggestedName = (parent, folder) => api("GET", "/api/folders/sug
 export const getParents = () => api("GET", "/api/parents");
 export const addParent = (path) => api("POST", "/api/parents", { path });
 export const removeParent = (path) => api("DELETE", "/api/parents", { path });
+export const reorderParents = (order) => api("PUT", "/api/parents/order", { order });
 export const browseDir = (path) => api("GET", "/api/browse" + (path ? "?" + qs({ path }) : ""));

@@ -1,7 +1,7 @@
 // Settings sheet: manage the configured parent folders via a directory browser.
 
 import { $, esc, flash, ic } from "./utils.js";
-import { getParents, addParent, removeParent, browseDir } from "./api.js";
+import { getParents, addParent, removeParent, reorderParents, browseDir } from "./api.js";
 import { loadParents } from "./create.js";
 
 let browseCur = null;     // path currently shown in the browser
@@ -19,11 +19,18 @@ async function renderParents() {
     return;
   }
   list.innerHTML = "";
-  for (const p of parents) {
+  parents.forEach((p, i) => {
     const row = document.createElement("div");
     row.className = "parent-row";
+    const upDis = i === 0 ? "disabled" : "";
+    const downDis = i === parents.length - 1 ? "disabled" : "";
     row.innerHTML = `<span class="parent-path mono">${esc(p)}</span>
+      <button class="iconbtn parent-move" type="button" aria-label="Move up" title="Move up" ${upDis}>${ic.arrowUp}</button>
+      <button class="iconbtn parent-move" type="button" aria-label="Move down" title="Move down" ${downDis}>${ic.arrowDown}</button>
       <button class="iconbtn parent-del" type="button" aria-label="Remove parent" title="Remove">${ic.trash}</button>`;
+    const [upBtn, downBtn] = row.querySelectorAll(".parent-move");
+    upBtn.addEventListener("click", () => move(parents, i, i - 1));
+    downBtn.addEventListener("click", () => move(parents, i, i + 1));
     row.querySelector(".parent-del").addEventListener("click", async () => {
       try {
         await removeParent(p);
@@ -32,7 +39,19 @@ async function renderParents() {
       } catch (e) { flash($("settingsMsg"), e.message, false); }
     });
     list.appendChild(row);
-  }
+  });
+}
+
+/** Swap two parents and persist the new order. */
+async function move(parents, from, to) {
+  if (to < 0 || to >= parents.length) return;
+  const next = [...parents];
+  [next[from], next[to]] = [next[to], next[from]];
+  try {
+    await reorderParents(next);
+    await renderParents();
+    await loadParents();
+  } catch (e) { flash($("settingsMsg"), e.message, false); }
 }
 
 /** Show the directory browser at `path` (null => server default start dir). */
