@@ -33,7 +33,7 @@ browser ──HTTP──> Express (backend/server.js, :3000)
     `main.js` (entry/init), `api.js` (REST client), `utils.js` (`$`/`esc`/
     `age`/`flash`/icons), `sessions.js` (list + poll), `selection.js`
     (multiselect), `create.js` (new-session sheet), `dialog.js` (kill confirm),
-    `offline.js` (wake-offline-sessions sheet), `terminal.js` (terminal modal),
+    `offline.js` (resume-past-conversation sheet), `terminal.js` (terminal modal),
     `usage.js` (usage strip), `settings.js` (parent-folders settings sheet +
     directory browser).
 - `run.sh` / `install-service.sh` — native run + service install.
@@ -64,8 +64,8 @@ browser ──HTTP──> Express (backend/server.js, :3000)
   Starts empty; the user adds parents via the settings sheet's directory
   browser. `DEV_ROOT` is **no longer the folder root** — it only seeds the
   browser's default start dir (when it's a real dir). `parentOf(cwd)` (replaces
-  the old `folderOf`) checks a cwd is directly under *some* configured parent;
-  it guards offline listing + wake, and every folder/session endpoint re-checks
+  the old `folderOf`) checks a cwd is under *some* configured parent;
+  it guards resume, and every folder/session endpoint re-checks
   its `parent` against the configured list (client can't read/write outside).
 - **`/api/browse` enumerates the host filesystem** to the (localhost) UI by
   design — roams anywhere. Parent paths are validated abs+exists+dir before
@@ -85,15 +85,23 @@ browser ──HTTP──> Express (backend/server.js, :3000)
   is computed as "pane command is not a plain shell".
 - **Remote control.** Sessions launch `claude --remote-control <session-name>`
   so they appear in the Claude mobile/web app — requires host claude logged in.
-- **Waking offline sessions.** A host/service restart wipes the tmux server, so
-  all live sessions vanish. There's no app DB — the source of truth for "what
-  existed" is Claude's own per-cwd history: `~/.claude/projects/<dir>/<id>.jsonl`.
-  `GET /api/sessions/offline` mines that (reads the real `cwd` out of the newest
-  transcript — decoding the dashed dir name is ambiguous since folder names also
-  contain dashes), keeps cwds under any configured parent with no live session, and
-  `POST /api/sessions/:name/wake` recreates the tmux session + `claude --continue`
-  (resumes the latest conversation). Don't add a state file for this — the
-  history already survives restarts.
+- **Resuming past conversations (`claude -r`, per folder).** A host/service
+  restart wipes the tmux server, so all live sessions vanish. There's no app DB —
+  the source of truth is Claude's own history: `~/.claude/projects/<dir>/<id>.jsonl`
+  (one dir per cwd, one file per conversation). The sheet is **folder-scoped** —
+  the user picks parent + folder, never a global dump.
+  `GET /api/conversations?parent=&folder=` lists conversations whose cwd is that
+  folder or any subfolder (prunes project dirs by the `projectDirFor` prefix, then
+  trusts the real `cwd` read from the transcript — the dashed dir name is
+  ambiguous since folder names contain dashes). Transcripts run to tens of MB:
+  read only head (cwd, first prompt) + tail (title / last-prompt lines, which
+  Claude re-appends), cached per mtime. Title = `customTitle` > `aiTitle` > prompt.
+  Sort by the last entry's `timestamp`, **not mtime** — Claude appends
+  bookkeeping lines (`cost-state`, `bridge-session`) to old transcripts, bumping
+  mtime on conversations nobody touched. `POST /api/conversations/:id/resume`
+  validates id (UUID) + cwd (under a parent) + that `<projectDirFor(cwd)>/<id>.jsonl`
+  exists, then launches `claude --resume <id>`. Don't add a state file for this —
+  the history already survives restarts.
 - **Security is layered — don't regress any layer.** The terminal is an
   unauthenticated shell into the host. (A) Node + ttyd bind `BIND_ADDR`
   (default `127.0.0.1`, loopback); remote access goes over `tailscale serve`
@@ -104,6 +112,23 @@ browser ──HTTP──> Express (backend/server.js, :3000)
   instead of dropping the attached browser to a host shell with ssh keys. Don't
   revert to send-keys, and don't add a `remain-on-exit on` that would leave a
   dead-but-attachable pane.
+- **Session names file** (`~/.config/claude-sessions/names.json`,
+  `{ <conversationId>: <name> }`). The Claude app lists a conversation under
+  the name its Remote Control session was first opened with and keeps it
+  across resumes, but Claude only records that name while the process lives.
+  So the server remembers it (first name wins), recorded on every `/api/sessions`
+  poll via `claudeRecord(pane_pid)` and on resume/restart. Resume reuses it so
+  our tmux name matches the app. This is the one exception to "no state file"
+  for resume — the list itself still comes from Claude's history.
+- **Restarting a live session** (`POST /api/sessions/:name/restart`, card's
+  Restart button) uses `tmux respawn-pane -k` so the name + Remote Control name
+  stay. The conversation id comes from `~/.claude/sessions/<pane_pid>.json`
+  (Claude writes it; the pane pid *is* claude), resumed only if its transcript
+  exists. Target tmux as `=name:` — a bare `-t name` prefix-matches other sessions.
+- **systemd `KillMode=process`.** The tmux server is spawned into the service's
+  cgroup, so the default `control-group` mode killed every live session on each
+  service restart. With `process` only `run.sh` is signalled (its trap stops
+  ttyd + node); tmux survives. Don't drop it from `install-service.sh`.
 - **Docker is intentionally gone.** On macOS a container can't share the host
   tmux socket (Linux VM) or read host auth (Keychain). Don't reintroduce it
   without solving host-session sharing.

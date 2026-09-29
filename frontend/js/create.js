@@ -93,7 +93,7 @@ export function closeSheet() {
 export function initCreate() {
   $("fab").addEventListener("click", openSheet);
 
-  // "Restart a session" — swap the create sheet for the offline-sessions sheet
+  // "Resume a past session" — swap the create sheet for the resume sheet
   $("restartBtn").addEventListener("click", () => { closeSheet(); openWake(); });
 
   // Parent change => reload its folders, then refresh the suggested name.

@@ -102,9 +102,45 @@ async function saveConfig() {
 
 const getParents = () => config.parents;
 
-// If `cwd` sits directly under one configured parent, return { parent, folder }
+// --- session names (conversation id -> name) --------------------------------
+// The Claude app shows a conversation under the name its Remote Control session
+// was first opened with (`--remote-control <name>`), and keeps it when the
+// conversation is resumed. Claude only records that name while the process is
+// alive (~/.claude/sessions/<pid>.json), so to bring a conversation back under
+// the same name we remember it: recorded when we launch a session and whenever
+// the poll sees a live one. First name wins — it's the one the app kept.
+// Persisted to ~/.config/claude-sessions/names.json; names are sanitized.
+
+const NAMES_FILE = path.join(CONFIG_DIR, 'names.json');
+let names = {};
+
+async function loadNames() {
+  try {
+    const parsed = JSON.parse(await fs.readFile(NAMES_FILE, 'utf8'));
+    names = {};
+    for (const [id, n] of Object.entries(parsed || {})) {
+      if (/^[0-9a-f-]{36}$/i.test(id) && typeof n === 'string' && sanitize(n) === n && n) names[id] = n;
+    }
+  } catch (_) {
+    names = {}; // missing or corrupt => start over
+  }
+}
+
+let namesWrite = Promise.resolve(); // serialize writes (atomic tmp + rename)
+function rememberName(id, name) {
+  if (!id || !name || names[id]) return;
+  names[id] = name;
+  namesWrite = namesWrite.then(async () => {
+    await fs.mkdir(CONFIG_DIR, { recursive: true });
+    const tmp = NAMES_FILE + '.tmp';
+    await fs.writeFile(tmp, JSON.stringify(names, null, 2));
+    await fs.rename(tmp, NAMES_FILE);
+  }).catch(() => {});
+}
+
+// If `cwd` sits anywhere under one configured parent, return { parent, folder }
 // (folder = the top-level subdir name). Else null. Replaces the old single-
-// DEV_ROOT folderOf — guards offline listing + wake against arbitrary client
+// DEV_ROOT folderOf — guards resuming a conversation against arbitrary client
 // dirs now that there are multiple parents.
 function parentOf(cwd) {
   for (const parent of getParents()) {
@@ -126,7 +162,7 @@ async function browseDefault() {
 // Per-session "context left", like the desktop app. Claude's transcript records
 // token usage on every assistant message; the latest main-chain assistant
 // message's input+cache tokens = what's currently loaded into the context
-// window. We mine the same per-cwd history used to wake offline sessions.
+// window. We mine the same per-cwd history used to resume past conversations.
 
 // cwd -> Claude's project dir name: every non-alphanumeric char becomes a dash
 // (matches how Claude Code encodes the path). Deterministic, so no scan needed.
@@ -211,6 +247,22 @@ async function contextForCwd(cwd) {
 
 // --- sessions --------------------------------------------------------------
 
+// Claude's record for a running process: ~/.claude/sessions/<pid>.json holds
+// its conversation id (sessionId) and start dir. A pane's pid IS claude (it's
+// the window command). null when missing/unreadable (e.g. claude not started).
+async function claudeRecord(pid) {
+  if (!/^\d+$/.test(String(pid))) return null;
+  try {
+    const rec = JSON.parse(await fs.readFile(path.join(os.homedir(), '.claude', 'sessions', pid + '.json'), 'utf8'));
+    return {
+      sessionId: typeof rec.sessionId === 'string' && UUID_RE.test(rec.sessionId) ? rec.sessionId : null,
+      cwd: typeof rec.cwd === 'string' && path.isAbsolute(rec.cwd) ? rec.cwd : null,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 // List sessions with metadata. Determine cwd + whether claude runs per session.
 async function listSessions() {
   // Use '|' as the field separator: tmux 3.3a mangles literal tabs in -F
@@ -230,11 +282,18 @@ async function listSessions() {
     const [name, created, attached] = line.split('|');
     if (!name) continue;
 
-    // cwd of the active pane
-    const cwdRes = await tmux([
-      'display-message', '-p', '-t', name, '#{pane_current_path}',
+    // pid + cwd of the active pane (pid first: a path may contain '|')
+    const paneRes = await tmux([
+      'display-message', '-p', '-t', `=${name}:`, '#{pane_pid}|#{pane_current_path}',
     ]);
-    const cwd = cwdRes.code === 0 ? cwdRes.stdout.trim() : '';
+    const paneOut = paneRes.code === 0 ? paneRes.stdout.trim() : '';
+    const sep = paneOut.indexOf('|');
+    const panePid = sep < 0 ? '' : paneOut.slice(0, sep);
+    const cwd = sep < 0 ? '' : paneOut.slice(sep + 1);
+
+    // Remember which conversation runs under this name (see rememberName).
+    const rec = await claudeRecord(panePid);
+    if (rec && rec.sessionId) rememberName(rec.sessionId, name);
 
     // commands running in panes of this session. Claude renames its process
     // title (e.g. to its version "2.1.168"), so we can't match on "claude".
@@ -273,14 +332,28 @@ app.get('/api/sessions', async (req, res) => {
   }
 });
 
-// Start claude in a fresh detached tmux session at `dir`. With `resume`, pick up
-// the most-recent conversation in that dir (`--continue`) — used to wake a
-// session a host/service restart wiped. `name` is sanitized to [A-Za-z0-9_-],
-// so it's safe to interpolate. Returns { ok: true } or { error }.
-async function launchSession(name, dir, resume) {
-  // Remote Control named after the session => controllable from the Claude
-  // mobile/web app. --continue resumes the latest conversation in `dir`.
-  const cmd = `claude ${resume ? '--continue ' : ''}--permission-mode auto --remote-control ${name}`;
+const sessionExists = async (n) => (await tmux(['has-session', '-t', n])).code === 0;
+
+// `base`, or `base-2`, `base-3`… — first name with no live tmux session.
+async function uniqueName(base) {
+  let name = base;
+  for (let i = 2; await sessionExists(name) && i < 100; i++) name = `${base}-${i}`;
+  return name;
+}
+
+// Start claude in a fresh detached tmux session at `dir`. With `resumeId`, pick
+// up that past conversation (`--resume <id>`) — used to bring back a session a
+// host/service restart wiped. `name` is sanitized to [A-Za-z0-9_-] and
+// `resumeId` validated as a UUID by the caller, so both are safe to interpolate.
+// Returns { ok: true } or { error }.
+// The claude command line for session `name`. Remote Control named after the
+// session => controllable from the Claude mobile/web app. Callers pass a
+// sanitized name and a UUID-validated resumeId, so both are safe to interpolate.
+const claudeCmd = (name, resumeId) =>
+  `claude ${resumeId ? `--resume ${resumeId} ` : ''}--permission-mode auto --remote-control ${name}`;
+
+async function launchSession(name, dir, resumeId) {
+  const cmd = claudeCmd(name, resumeId);
 
   // SECURITY: run claude AS the tmux window's command, not typed into a login
   // shell via send-keys. With the old send-keys approach, exiting claude
@@ -321,17 +394,11 @@ app.post('/api/sessions', async (req, res) => {
   let name = provided ? sanitize(raw) : await suggestName(dir);
   if (!name) return res.status(400).json({ error: 'Invalid session name' });
 
-  const exists = async (n) => (await tmux(['has-session', '-t', n])).code === 0;
-
   // A user-typed name that collides is an error; an auto name gets de-duped.
-  if (await exists(name)) {
-    if (provided) return res.status(409).json({ error: 'Session already exists' });
-    const base = name;
-    let i = 2;
-    do { name = `${base}-${i++}`; } while (await exists(name) && i < 100);
-  }
+  if (provided && await sessionExists(name)) return res.status(409).json({ error: 'Session already exists' });
+  if (!provided) name = await uniqueName(name);
 
-  const launched = await launchSession(name, dir, false);
+  const launched = await launchSession(name, dir, null);
   if (launched.error) return res.status(500).json({ error: launched.error });
 
   res.status(201).json({ name, cwd: dir });
@@ -348,6 +415,47 @@ app.delete('/api/sessions/:name', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Restart claude inside an existing session, keeping its name (and so its
+// Remote Control name) and resuming the same conversation — e.g. to pick up a
+// Claude Code update or changed settings/MCP config. The pane's process IS
+// claude (it's the window command), and Claude records its conversation id in
+// ~/.claude/sessions/<pid>.json. `respawn-pane -k` kills it and starts the new
+// claude as the pane command again, so launchSession's no-shell guarantee
+// still holds.
+app.post('/api/sessions/:name/restart', async (req, res) => {
+  const name = sanitize(req.params.name);
+  if (!name) return res.status(400).json({ error: 'Invalid session name' });
+
+  // `=name:` = exactly this session's current pane (a bare -t name would
+  // prefix-match another session, and display-message doesn't fail on a miss).
+  const target = `=${name}:`;
+  if (!await sessionExists(`=${name}`)) return res.status(404).json({ error: 'Session not found' });
+  const info = await tmux(['display-message', '-p', '-t', target, '#{pane_pid}|#{pane_current_path}']);
+  if (info.code !== 0) return res.status(404).json({ error: info.stderr.trim() || 'Session not found' });
+  const [pid, paneCwd] = info.stdout.trim().split('|');
+
+  // Conversation to resume + the dir claude was started in (the pane's current
+  // path can drift). No/unreadable record => fresh claude in the same dir.
+  let resumeId = null, cwd = paneCwd;
+  const rec = await claudeRecord(pid);
+  if (rec && rec.cwd) cwd = rec.cwd;
+  if (rec && rec.sessionId) {
+    // Only resume a conversation with a transcript (a claude that never got a
+    // prompt has an id but nothing to resume).
+    const file = path.join(PROJECTS_DIR, projectDirFor(cwd), rec.sessionId + '.jsonl');
+    if (await fs.stat(file).catch(() => null)) resumeId = rec.sessionId;
+    rememberName(rec.sessionId, name);
+  }
+
+  const st = cwd ? await fs.stat(cwd).catch(() => null) : null;
+  if (!st || !st.isDirectory()) return res.status(404).json({ error: 'Folder no longer exists' });
+
+  const r = await tmux(['respawn-pane', '-k', '-t', target, '-c', cwd, claudeCmd(name, resumeId)]);
+  if (r.code !== 0) return res.status(500).json({ error: r.stderr.trim() || 'Failed to restart claude' });
+
+  res.json({ name, cwd, resumed: resumeId });
+});
+
 app.get('/api/sessions/:name/terminal', (req, res) => {
   const name = sanitize(req.params.name);
   if (!name) return res.status(400).json({ error: 'Invalid session name' });
@@ -358,72 +466,164 @@ app.get('/api/sessions/:name/terminal', (req, res) => {
   res.json({ url });
 });
 
-// --- offline sessions (wake after a restart) -------------------------------
+// --- pane capture (copy text out of a session) -----------------------------
+// Selecting text in the live terminal is unreliable: Claude Code runs in tmux's
+// alternate screen and repaints constantly, which wipes any in-progress
+// xterm.js selection, and on touch a drag is consumed by the scroll shim.
+// Instead hand the UI a plain-text snapshot of the pane that the browser can
+// select natively. Read-only — no way to write into the session.
+app.get('/api/sessions/:name/capture', async (req, res) => {
+  const name = sanitize(req.params.name);
+  if (!name) return res.status(400).json({ error: 'Invalid session name' });
+
+  let lines = parseInt(req.query.lines, 10);
+  if (!Number.isFinite(lines)) lines = 2000;
+  lines = Math.min(Math.max(lines, 50), 20000);
+
+  // -p print to stdout, -J join wrapped lines (so long lines copy whole),
+  // -S -N start N lines into the scrollback (alt screen has none: visible only).
+  const cap = await tmux(['capture-pane', '-p', '-J', '-S', '-' + lines, '-t', name]);
+  if (cap.code !== 0) {
+    return res.status(404).json({ error: cap.stderr.trim() || 'Session not found' });
+  }
+  res.json({ text: cap.stdout.replace(/\s+$/, '') });
+});
+
+// --- past conversations (resume, like `claude -r`) -------------------------
 // A host/service restart wipes the tmux server, so every live session is gone.
-// Claude's own per-cwd history survives, though: ~/.claude/projects/<dir>/
-// <id>.jsonl, one dir per working directory. We mine that to list folders that
-// had a session but have no live tmux session now — each can be "woken" by
-// recreating a tmux session there and resuming the latest conversation.
+// Claude's own history survives, though: ~/.claude/projects/<dir>/<id>.jsonl,
+// one dir per working directory, one file per conversation. For a chosen
+// folder we list every conversation whose cwd is that folder or anything below
+// it; resuming one recreates a tmux session there running `claude --resume <id>`.
 
-async function listOffline() {
-  const projects = path.join(os.homedir(), '.claude', 'projects');
-  let dirs;
+const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONV_LIMIT = 50;
+
+// Read the first `maxBytes` of a file (cwd + first prompt sit near the top).
+async function readHead(file, maxBytes) {
+  const fh = await fs.open(file, 'r');
   try {
-    dirs = await fs.readdir(projects, { withFileTypes: true });
-  } catch (_) {
-    return []; // no history dir => nothing to offer
+    const buf = Buffer.alloc(maxBytes);
+    const { bytesRead } = await fh.read(buf, 0, maxBytes, 0);
+    return buf.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await fh.close();
   }
-
-  // cwds that already have a live tmux session aren't "offline".
-  const live = new Set((await listSessions()).map((s) => s.cwd).filter(Boolean));
-
-  const seen = new Set();
-  const out = [];
-  for (const d of dirs) {
-    if (!d.isDirectory()) continue;
-    const dir = path.join(projects, d.name);
-
-    // newest transcript in this project dir (its mtime = last active)
-    let files;
-    try { files = await fs.readdir(dir); } catch (_) { continue; }
-    let newest = null;
-    for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const st = await fs.stat(path.join(dir, f)).catch(() => null);
-      if (st && (!newest || st.mtimeMs > newest.mtimeMs)) {
-        newest = { path: path.join(dir, f), mtimeMs: st.mtimeMs };
-      }
-    }
-    if (!newest) continue;
-
-    // Read the real cwd from the transcript — decoding the dir name is
-    // ambiguous because folder names can themselves contain dashes.
-    let raw;
-    try { raw = await fs.readFile(newest.path, 'utf8'); } catch (_) { continue; }
-    const m = raw.match(/"cwd":"((?:[^"\\]|\\.)*)"/);
-    if (!m) continue;
-    let cwd;
-    try { cwd = JSON.parse('"' + m[1] + '"'); } catch (_) { continue; }
-
-    const m2 = parentOf(cwd);
-    if (!m2) continue;            // outside every configured parent
-    if (live.has(cwd)) continue;  // still running
-    if (seen.has(cwd)) continue;  // dedupe
-    seen.add(cwd);
-
-    const name = sanitize(path.basename(cwd)) || sanitize(m2.folder);
-    if (!name) continue;
-
-    out.push({ name, folder: m2.folder, parent: m2.parent, cwd, lastActive: Math.round(newest.mtimeMs) });
-  }
-
-  out.sort((a, b) => b.lastActive - a.lastActive);
-  return out;
 }
 
-app.get('/api/sessions/offline', async (req, res) => {
+// Value of the last (or first) `"key":"..."` string field in raw jsonl text.
+// Regex over the raw text instead of parsing: transcripts run to tens of MB.
+function jsonField(text, key, last) {
+  const re = new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`, 'g');
+  let m, hit = null;
+  while ((m = re.exec(text))) { hit = m[1]; if (!last) break; }
+  if (hit == null) return null;
+  try { return JSON.parse('"' + hit + '"'); } catch (_) { return null; }
+}
+
+// First real (non-meta, non-command) user prompt in the transcript head.
+function firstPrompt(head) {
+  for (const ln of head.split('\n')) {
+    if (ln.indexOf('"type":"user"') < 0) continue;
+    let d;
+    try { d = JSON.parse(ln); } catch (_) { continue; }
+    if (d.isMeta || d.isSidechain) continue;
+    const c = d.message && d.message.content;
+    const text = typeof c === 'string' ? c
+      : Array.isArray(c) ? (c.find((p) => p && p.type === 'text') || {}).text : null;
+    if (text && !text.startsWith('<')) return text; // skip <command-name> etc.
+  }
+  return null;
+}
+
+const convCache = new Map(); // transcript path -> { mtimeMs, meta }
+
+// { cwd, title, prompt, at } for one transcript, or null. Reads only the head
+// (cwd, first prompt) and tail (Claude re-appends title/last-prompt lines as the
+// conversation goes). `at` is the last entry's timestamp — not the mtime, which
+// Claude bumps on old transcripts when it appends bookkeeping lines (cost-state,
+// bridge-session). Cached per mtime so reopening the sheet stays cheap.
+async function conversationMeta(file, st) {
+  const cached = convCache.get(file);
+  if (cached && cached.mtimeMs === st.mtimeMs) return cached.meta;
+
+  let meta = null;
   try {
-    res.json(await listOffline());
+    const head = await readHead(file, 64 * 1024);
+    const tail = st.size > 64 * 1024 ? await readTail(file, st.size, 256 * 1024) : head;
+    const cwd = jsonField(head, 'cwd', false) || jsonField(tail, 'cwd', false);
+    if (cwd) {
+      const prompt = jsonField(tail, 'lastPrompt', true) || firstPrompt(head);
+      const title = jsonField(tail, 'customTitle', true) || jsonField(head, 'customTitle', true)
+        || jsonField(tail, 'aiTitle', true) || jsonField(head, 'aiTitle', true) || prompt;
+      const at = Date.parse(jsonField(tail, 'timestamp', true) || jsonField(head, 'timestamp', true));
+      meta = { cwd, title, prompt, at: Number.isFinite(at) ? at : Math.round(st.mtimeMs) };
+    }
+  } catch (_) { /* unreadable => skip */ }
+  convCache.set(file, { mtimeMs: st.mtimeMs, meta });
+  return meta;
+}
+
+const oneLine = (s, n) => (s ? s.replace(/\s+/g, ' ').trim().slice(0, n) : null);
+
+// Conversations whose cwd is `root` or a subdirectory of it, newest first.
+async function listConversations(root) {
+  let dirs;
+  try { dirs = await fs.readdir(PROJECTS_DIR, { withFileTypes: true }); } catch (_) { return []; }
+
+  // Project dir names encode the cwd (non-alphanumerics -> '-'), so root and
+  // its subdirs share a prefix. A sibling like "root-x" matches too — the real
+  // cwd read from the transcript is the authority, the prefix only prunes.
+  const prefix = projectDirFor(root);
+  const out = [];
+  for (const d of dirs) {
+    if (!d.isDirectory() || (d.name !== prefix && !d.name.startsWith(prefix + '-'))) continue;
+    const dir = path.join(PROJECTS_DIR, d.name);
+    let files;
+    try { files = await fs.readdir(dir); } catch (_) { continue; }
+    for (const f of files) {
+      const id = f.slice(0, -'.jsonl'.length);
+      if (!f.endsWith('.jsonl') || !UUID_RE.test(id)) continue;
+      const fp = path.join(dir, f);
+      const st = await fs.stat(fp).catch(() => null);
+      if (!st) continue;
+      const meta = await conversationMeta(fp, st);
+      if (!meta) continue;
+      const rel = path.relative(root, meta.cwd);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
+      out.push({
+        id,
+        name: names[id] || null, // session name it last ran under (= Claude app's name)
+        cwd: meta.cwd,
+        sub: rel, // '' when directly in root
+        title: oneLine(meta.title, 120) || 'Untitled',
+        prompt: oneLine(meta.prompt, 200),
+        lastActive: meta.at,
+      });
+    }
+  }
+  out.sort((a, b) => b.lastActive - a.lastActive);
+  const list = out.slice(0, CONV_LIMIT);
+
+  // Hint which conversation is probably already open: the newest one in a cwd
+  // that has a live tmux session. Heuristic (two sessions can share a cwd).
+  const live = new Map((await listSessions()).filter((s) => s.cwd).map((s) => [s.cwd, s.name]));
+  const seen = new Set();
+  for (const c of list) {
+    if (seen.has(c.cwd)) continue;
+    seen.add(c.cwd);
+    if (live.has(c.cwd)) c.liveSession = live.get(c.cwd);
+  }
+  return list;
+}
+
+app.get('/api/conversations', async (req, res) => {
+  const parent = typeof req.query.parent === 'string' ? req.query.parent : '';
+  const folder = sanitize(req.query.folder);
+  if (!getParents().includes(parent) || !folder) return res.status(400).json({ error: 'Invalid parent/folder' });
+  try {
+    res.json(await listConversations(path.join(parent, folder)));
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -464,12 +664,13 @@ async function suggestName(cwd) {
   return (best && slugifyName(best.title)) || fallback;
 }
 
-// Wake an offline session: recreate its tmux session in the (re-validated) cwd
-// and resume the latest conversation there. cwd is client-supplied, so re-check
-// it's under a configured parent before launching claude in it.
-app.post('/api/sessions/:name/wake', async (req, res) => {
-  const name = sanitize(req.params.name);
-  if (!name) return res.status(400).json({ error: 'Invalid session name' });
+// Resume a past conversation: new tmux session in its (re-validated) cwd running
+// `claude --resume <id>`. cwd and id are client-supplied: cwd must sit under a
+// configured parent, id must be a UUID, and the transcript must actually exist
+// in that cwd's project dir (so the pair can't be mixed and matched).
+app.post('/api/conversations/:id/resume', async (req, res) => {
+  const id = req.params.id;
+  if (!UUID_RE.test(id)) return res.status(400).json({ error: 'Invalid conversation id' });
 
   const cwd = typeof (req.body && req.body.cwd) === 'string' ? path.resolve(req.body.cwd) : null;
   if (!cwd || !parentOf(cwd)) return res.status(400).json({ error: 'cwd must be under a configured parent folder' });
@@ -477,11 +678,19 @@ app.post('/api/sessions/:name/wake', async (req, res) => {
   const st = await fs.stat(cwd).catch(() => null);
   if (!st || !st.isDirectory()) return res.status(404).json({ error: 'Folder no longer exists' });
 
-  const has = await tmux(['has-session', '-t', name]);
-  if (has.code === 0) return res.status(409).json({ error: 'Session already exists' });
+  const file = path.join(PROJECTS_DIR, projectDirFor(cwd), id + '.jsonl');
+  const fst = await fs.stat(file).catch(() => null);
+  if (!fst) return res.status(404).json({ error: 'Conversation not found' });
 
-  const launched = await launchSession(name, cwd, true);
+  // Same name the Claude app shows for it when we know it (see rememberName),
+  // else one derived from its title.
+  const meta = await conversationMeta(file, fst);
+  const base = names[id] || slugifyName(meta && meta.title) || sanitize(path.basename(cwd)) || 'session';
+  const name = await uniqueName(base);
+
+  const launched = await launchSession(name, cwd, id);
   if (launched.error) return res.status(500).json({ error: launched.error });
+  rememberName(id, name);
 
   res.status(201).json({ name, cwd });
 });
@@ -697,7 +906,7 @@ app.get('/api/usage', async (req, res) => {
 
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
-loadConfig().then(() => {
+Promise.all([loadConfig(), loadNames()]).then(() => {
   app.listen(PORT, BIND_ADDR, () => {
     console.log(`Claude Session Manager on ${BIND_ADDR}:${PORT}  parents=${getParents().length}`);
   });

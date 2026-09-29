@@ -154,6 +154,10 @@ Environment=BIND_ADDR=${BIND_ADDR}
 ExecStart=/bin/bash ${RUN}
 Restart=always
 RestartSec=3
+# Only signal run.sh on stop/restart (its trap stops ttyd + node). The default
+# control-group mode would also kill the tmux server run.sh's sessions spawned
+# into this cgroup — wiping every live Claude session on each restart.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target

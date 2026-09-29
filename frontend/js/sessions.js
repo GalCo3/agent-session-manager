@@ -3,7 +3,7 @@
 import { $, esc, age, ic, tokensShort, ctxLeftPct } from "./utils.js";
 import { getSessions } from "./api.js";
 import { selected, isSelecting, toggleSelect, beginSelectionWith, pruneSelection, updateBar } from "./selection.js";
-import { confirmKill } from "./dialog.js";
+import { confirmKill, confirmRestart } from "./dialog.js";
 import { openTerminal } from "./terminal.js";
 
 const LONG_PRESS_MS = 500;
@@ -56,6 +56,7 @@ function sessionCard(s) {
     </div>
     <div class="actions">
       <button class="term" data-open>${ic.term} Terminal</button>
+      <button class="term" data-restart>${ic.restart} Restart</button>
       <button class="kill" data-kill>${ic.trash} Kill</button>
     </div>`;
 
@@ -79,7 +80,7 @@ function sessionCard(s) {
   el.addEventListener("click", (e) => {
     if (longFired) { longFired = false; e.preventDefault(); e.stopPropagation(); return; }
     if (isSelecting()) { e.preventDefault(); toggleSelect(s.name, el); return; }
-    if (e.target.closest("button")) return; // Terminal / Kill handle themselves
+    if (e.target.closest("button")) return; // Terminal / Restart / Kill handle themselves
     const open = el.classList.toggle("expanded");
     if (open) expanded.add(s.name); else expanded.delete(s.name);
   });
@@ -92,6 +93,7 @@ function sessionCard(s) {
     finally { btn.disabled = false; }
   });
 
+  el.querySelector("[data-restart]").addEventListener("click", () => confirmRestart(s.name));
   el.querySelector("[data-kill]").addEventListener("click", () => confirmKill(s.name));
   return el;
 }

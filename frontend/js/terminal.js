@@ -3,6 +3,7 @@
 
 import { $ } from "./utils.js";
 import { getTerminal } from "./api.js";
+import { openCapture, closeCapture } from "./capture.js";
 
 let openName = null;
 let raf = 0;
@@ -69,6 +70,7 @@ export async function openTerminal(name) {
 
 export function closeTerminal() {
   if (!openName) return;
+  closeCapture();
   $("termModal").classList.remove("open");
   document.body.classList.remove("term-open");
   // Remove the iframe element (not navigate it) so ttyd's beforeunload
@@ -83,4 +85,6 @@ export const isTerminalOpen = () => openName !== null;
 /** Wire the close button. Call once on load. */
 export function initTerminal() {
   $("termClose").addEventListener("click", closeTerminal);
+  // Copy view: a selectable text snapshot of the pane (see capture.js).
+  $("termCopy").addEventListener("click", () => { if (openName) openCapture(openName); });
 }

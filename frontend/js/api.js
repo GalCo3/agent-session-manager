@@ -11,18 +11,27 @@ export async function api(method, url, body) {
   const res = await fetch(url, opt);
   let data = null;
   try { data = await res.json(); } catch (_) {}
-  if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+  if (!res.ok) {
+    const err = new Error((data && data.error) || ("HTTP " + res.status));
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
 export const getSessions = () => api("GET", "/api/sessions");
-export const getOffline = () => api("GET", "/api/sessions/offline");
 export const getTerminal = (name) => api("GET", "/api/sessions/" + encodeURIComponent(name) + "/terminal");
+export const capturePane = (name, lines) =>
+  api("GET", "/api/sessions/" + encodeURIComponent(name) + "/capture" + (lines ? "?lines=" + lines : ""));
 export const killSession = (name) => api("DELETE", "/api/sessions/" + encodeURIComponent(name));
+export const restartSession = (name) => api("POST", "/api/sessions/" + encodeURIComponent(name) + "/restart");
 export const createSession = (name, parent, folder) => api("POST", "/api/sessions", { name, parent, folder });
-export const wakeSession = (name, cwd) => api("POST", "/api/sessions/" + encodeURIComponent(name) + "/wake", { cwd });
 
 const qs = (o) => Object.entries(o).map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
+
+// past conversations (resume sheet)
+export const getConversations = (parent, folder) => api("GET", "/api/conversations?" + qs({ parent, folder }));
+export const resumeConversation = (id, cwd) => api("POST", "/api/conversations/" + encodeURIComponent(id) + "/resume", { cwd });
 
 export const getFolders = (parent) => api("GET", "/api/folders?" + qs({ parent }));
 export const createFolder = (parent, name) => api("POST", "/api/folders", { parent, name });

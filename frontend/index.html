@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="css/styles.css?v=4" />
+<link rel="stylesheet" href="css/styles.css?v=5" />
 </head>
 <body>
 
@@ -146,18 +146,35 @@
 
   <button id="restartBtn" class="ghost" type="button" style="width:100%;margin-top:10px">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
-    Restart a session
+    Resume a past session
   </button>
 </section>
 
-<!-- restart-session sheet: recently dead Claude sessions (no live tmux now) -->
+<!-- resume sheet: past Claude conversations in a chosen folder (+ subfolders) -->
 <section id="wakeSheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="wakeTitle">
   <div class="grab" aria-hidden="true"></div>
   <h2 id="wakeTitle" class="wake-head">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></svg>
-    Restart a Session
+    Resume a Session
   </h2>
-  <p class="sheet-sub">Recently closed Claude sessions that aren't running now — e.g. after a restart. Pick one to resume its latest conversation.</p>
+  <p class="sheet-sub">Past Claude conversations in a folder and its subfolders, newest first. Pick one to resume it in a new session.</p>
+
+  <div class="field">
+    <label for="rParent">Parent directory</label>
+    <div class="selectwrap">
+      <select id="rParent"></select>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="rFolder">Folder</label>
+    <div class="selectwrap">
+      <select id="rFolder"></select>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+  </div>
+
   <div id="wakeList" class="wake-list"></div>
   <div id="wakeMsg" class="msg" role="status" aria-live="polite"></div>
 </section>
@@ -215,6 +232,9 @@
       <span id="termTitle">Terminal</span>
     </span>
     <span class="spacer"></span>
+    <button id="termCopy" class="iconbtn" type="button" aria-label="Copy text" title="Copy text from this session">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </button>
     <a id="termPop" class="iconbtn" target="_blank" rel="noopener" aria-label="Open in new tab" title="Open in new tab">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
     </a>
@@ -224,6 +244,28 @@
   </div>
   <div class="term-body">
     <iframe id="termFrame" title="Terminal" allow="clipboard-read; clipboard-write"></iframe>
+  </div>
+</div>
+
+<!-- copy-text view: plain snapshot of a session's pane, natively selectable -->
+<div id="capModal" class="cap-modal" role="dialog" aria-modal="true" aria-labelledby="capTitle">
+  <div class="term-head">
+    <span class="term-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      <span id="capTitle">Copy text</span>
+    </span>
+    <span class="spacer"></span>
+    <button id="capReload" class="iconbtn" type="button" aria-label="Refresh snapshot" title="Refresh">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+    </button>
+    <button id="capClose" class="iconbtn" type="button" aria-label="Close copy view" title="Close">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <textarea id="capText" class="cap-text" readonly wrap="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Session text"></textarea>
+  <div class="cap-foot">
+    <button id="capAll" class="primary" type="button">Copy all</button>
+    <div id="capMsg" class="msg" role="status" aria-live="polite"></div>
   </div>
 </div>
 

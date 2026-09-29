@@ -6,8 +6,9 @@ import { initSelection, isSelecting, exitSelect } from "./selection.js";
 import { initCreate, loadFolders, closeSheet } from "./create.js";
 import { initDialog, closeDialog } from "./dialog.js";
 import { initTerminal, closeTerminal } from "./terminal.js";
+import { initCapture, closeCapture, isCaptureOpen } from "./capture.js";
 import { loadUsage, tickUsage } from "./usage.js";
-import { closeWake } from "./offline.js";
+import { initWake, closeWake } from "./offline.js";
 import { initSettings, closeSettings } from "./settings.js";
 import { initGrid, closeGrid, closePicker, isPickerOpen, isGridOpen } from "./grid.js";
 
@@ -15,6 +16,8 @@ initSelection();
 initCreate();
 initDialog();
 initTerminal();
+initCapture();
+initWake();
 initSettings();
 initGrid();
 
@@ -24,6 +27,8 @@ $("scrim").addEventListener("click", () => { closeSheet(); closeDialog(); closeW
 // Esc closes overlays and leaves select mode
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    // The copy view sits on top of the terminal — Esc closes it first.
+    if (isCaptureOpen()) { closeCapture(); return; }
     // When the grid view is open, Esc walks back one layer: picker, then view.
     if (isPickerOpen()) { closePicker(); return; }
     if (isGridOpen()) { closeGrid(); return; }
